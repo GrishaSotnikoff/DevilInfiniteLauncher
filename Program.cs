@@ -1,10 +1,12 @@
-// Launcher.cs
+﻿// Launcher.cs
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
@@ -56,14 +58,14 @@ namespace GameLauncher
         private List<Image> banners = new List<Image>();
         private int currentBanner = 0;
         private Timer bannerTimer;
-
+        private bool _isInstalled = false;
         // Footer elements
         private Label versionLabel;
         private Button playButton;
 
         public LauncherForm()
         {
-            installPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Devil Infinite");
+            installPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Devil Infinite");
             Directory.CreateDirectory(installPath);
             localVersionPath = Path.Combine(installPath, "version.txt");
 
@@ -73,22 +75,27 @@ namespace GameLauncher
 
             LoadDataAsync();
 
-           
+
         }
 
         private async void LoadDataAsync()
         {
             while (true)
             {
+                CheckForUpdatesAsync();
                 LoadBannersAsync();
                 LoadNewsAsync();
-                CheckForUpdatesAsync();
-                await Task.Delay(15000); // Refresh every minute
+                //await Task.Delay(300);
+                //if (!_isInstalled) {
+                    
+                //}
+                await Task.Delay(15000);
             }
         }
 
         private void InitializeComponent()
         {
+            Thread.Sleep(300);
             // Form setup
             Text = "Devil Infinite Launcher";
             ClientSize = new Size(1200, 600);
@@ -251,7 +258,11 @@ namespace GameLauncher
                 {
                     ShowBanner(0);
                     bannerTimer = new Timer { Interval = 5000 };
-                    bannerTimer.Tick += (s, e) => ShowBanner((currentBanner + 1) % banners.Count);
+                    try
+                    {
+                        bannerTimer.Tick += (s, e) => ShowBanner((currentBanner + 1) % banners.Count);
+                    }
+                    catch { };
                     bannerTimer.Start();
                 }
             }
@@ -294,10 +305,16 @@ namespace GameLauncher
                 var remoteVer = (await httpClient.GetStringAsync(VersionUrl)).Trim();
                 var localVer = File.Exists(localVersionPath)
                     ? (await File.ReadAllTextAsync(localVersionPath)).Trim()
-                    : "2505.0.0";
-                versionLabel.Text = string.Compare(remoteVer, localVer) > 0
-                    ? $"Update available: {remoteVer}"
-                    : $"Up to date: {localVer}";
+                    : "2504.0.0";
+
+                if (string.Compare(remoteVer, localVer) > 0) {
+                    versionLabel.Text = $"Update available: {remoteVer}";
+                    playButton.Text = "DOWNLOAD";
+                }
+                else{
+                    versionLabel.Text = $"Up to date: {localVer}";
+                    playButton.Text = "PLAY";
+                }
             }
             catch (Exception ex)
             {
@@ -331,13 +348,120 @@ namespace GameLauncher
             footerPanel.Controls.Add(playButton);
         }
 
-        private void LaunchGame()
+        private async void LaunchGame()
         {
-            var exe = Path.Combine(installPath, "MyGame.exe");
+            // if update is available (or first‐install), download first
+            if (playButton.Text.Equals("DOWNLOAD"))
+            {
+                await DownloadGame();
+                return;
+            }
+
+            // otherwise try to start
+            var exe = Path.Combine(installPath, "DevilInfinite.exe");
             if (File.Exists(exe))
+            {
                 Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = installPath });
+            }
             else
-                MessageBox.Show("Game not found.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            {
+                MessageBox.Show(
+                    "Game executable missing. Re-downloading now…",
+                    "Launcher",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                await DownloadGame();
+            }
+        }
+
+        // 2) Revised DownloadGame with lock detection and FilePath usage
+        private async Task DownloadGame()
+        {
+            playButton.Enabled = false;
+            versionLabel.Text = "Downloading game...";
+
+            try
+            {
+                var manifestJson = await httpClient.GetStringAsync(ManifestUrl);
+                var manifest = JsonSerializer.Deserialize<List<ManifestEntry>>(manifestJson)
+                               ?? throw new InvalidOperationException("Invalid manifest format.");
+
+                int done = 0, total = manifest.Count;
+                foreach (var entry in manifest)
+                {
+                    var remoteUrl = $"{ServerUrl}{entry.Url}";
+                    var destPath = Path.Combine(installPath, entry.FileName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+
+                    try
+                    {
+                        using var resp = await httpClient.GetAsync(remoteUrl, HttpCompletionOption.ResponseHeadersRead);
+                        resp.EnsureSuccessStatusCode();
+
+                        await using var remoteStream = await resp.Content.ReadAsStreamAsync();
+                        await using var fileStream = new FileStream(
+                            destPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None
+                        );
+                        await remoteStream.CopyToAsync(fileStream);
+                    }
+                    catch (IOException ioEx) when (IsFileLocked(ioEx))
+                    {
+                        MessageBox.Show(
+                            $"Cannot update “{entry.FileName}” because it is in use.\n" +
+                            "Please close the game and try again.",
+                            "Update Blocked",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning
+                        );
+                        return;
+                    }
+
+                    // checksum check
+                    if (!string.IsNullOrEmpty(entry.Checksum))
+                    {
+                        var actual = BitConverter
+                            .ToString(SHA256.Create().ComputeHash(File.ReadAllBytes(destPath)))
+                            .Replace("-", "").ToLowerInvariant();
+
+                        if (!actual.Equals(entry.Checksum, StringComparison.OrdinalIgnoreCase))
+                            throw new IOException($"Checksum mismatch for {entry.FileName}");
+                    }
+
+                    done++;
+                    versionLabel.Text = $"Downloading... ({done}/{total})";
+                }
+
+                // finalize
+                var remoteVer = (await httpClient.GetStringAsync(VersionUrl)).Trim();
+                await File.WriteAllTextAsync(localVersionPath, remoteVer);
+                _isInstalled = true;
+                playButton.Text = "PLAY";
+                versionLabel.Text = $"Up to date: {remoteVer}";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Failed to download game:\n{ex.Message}",
+                    "Download Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
+                versionLabel.Text = "Download error – see log";
+            }
+            finally
+            {
+                playButton.Enabled = true;
+            }
+        }
+
+        // 3) Helper to detect a sharing‐violation on Windows
+        private static bool IsFileLocked(IOException ex)
+        {
+            const int ERROR_SHARING_VIOLATION = 0x20;
+            const int ERROR_LOCK_VIOLATION = 0x21;
+            int hr = Marshal.GetHRForException(ex) & 0xFFFF;
+            return hr == ERROR_SHARING_VIOLATION || hr == ERROR_LOCK_VIOLATION;
         }
 
         private class NewsItem
@@ -345,5 +469,17 @@ namespace GameLauncher
             public string Title { get; set; }
             public DateTime Date { get; set; }
         }
+
+        // Add this inner class somewhere in LauncherForm (e.g. next to NewsItem)
+        private class ManifestEntry
+        {
+            public string FileName { get; set; }
+
+            public string FilePath { get; set; }  
+            public string Url { get; set; }
+            public string Size { get; set; }  // optional: size in bytes
+            public string Checksum { get; set; }  // optional: SHA256 or MD5
+        }
+
     }
 }
