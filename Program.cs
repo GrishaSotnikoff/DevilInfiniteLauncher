@@ -71,9 +71,20 @@ namespace GameLauncher
             InitializeSections();
             ShowSection("Home");
 
-            LoadBannersAsync();
-            LoadNewsAsync();
-            CheckForUpdatesAsync();
+            LoadDataAsync();
+
+           
+        }
+
+        private async void LoadDataAsync()
+        {
+            while (true)
+            {
+                LoadBannersAsync();
+                LoadNewsAsync();
+                CheckForUpdatesAsync();
+                await Task.Delay(15000); // Refresh every minute
+            }
         }
 
         private void InitializeComponent()
@@ -225,12 +236,15 @@ namespace GameLauncher
         {
             try
             {
+                
                 var json = await httpClient.GetStringAsync(BannersUrl);
                 var urls = JsonSerializer.Deserialize<List<string>>(json);
+                banners.Clear();
                 foreach (var url in urls)
                 {
                     var data = await httpClient.GetByteArrayAsync(url);
                     using var ms = new MemoryStream(data);
+                   
                     banners.Add(Image.FromStream(ms));
                 }
                 if (banners.Count > 0)
@@ -259,6 +273,7 @@ namespace GameLauncher
             {
                 var json = await httpClient.GetStringAsync(NewsUrl);
                 var items = JsonSerializer.Deserialize<List<NewsItem>>(json);
+                newsFlow.Controls.Clear();
                 foreach (var item in items)
                 {
                     var panel = new Panel { Width = 300, Height = 80, Margin = new Padding(5), BackColor = Color.FromArgb(80, 80, 80) };
@@ -279,7 +294,7 @@ namespace GameLauncher
                 var remoteVer = (await httpClient.GetStringAsync(VersionUrl)).Trim();
                 var localVer = File.Exists(localVersionPath)
                     ? (await File.ReadAllTextAsync(localVersionPath)).Trim()
-                    : "0.0.0";
+                    : "2505.0.0";
                 versionLabel.Text = string.Compare(remoteVer, localVer) > 0
                     ? $"Update available: {remoteVer}"
                     : $"Up to date: {localVer}";
