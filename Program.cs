@@ -24,7 +24,7 @@ namespace GameLauncher
 
     public class LauncherForm : Form
     {
-        private const string ServerUrl = "http://localhost:5000";
+        private const string ServerUrl = "http://devilInfinite.com";
         // Remote endpoints
         private const string VersionUrl = $"{ServerUrl}/game/version.txt";
         private const string ManifestUrl = $"{ServerUrl}/game/manifest.json";
