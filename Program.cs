@@ -24,7 +24,7 @@ namespace GameLauncher
 
     public class LauncherForm : Form
     {
-        private const string ServerUrl = "http://localhost:5000/";
+        private const string ServerUrl = "http://localhost:5000";
         // Remote endpoints
         private const string VersionUrl = $"{ServerUrl}/game/version.txt";
         private const string ManifestUrl = $"{ServerUrl}/game/manifest.json";
@@ -225,7 +225,7 @@ namespace GameLauncher
         {
             try
             {
-                var json = await httpClient.GetStringAsync("http://localhost:5000/launcher/banners.json");
+                var json = await httpClient.GetStringAsync(BannersUrl);
                 var urls = JsonSerializer.Deserialize<List<string>>(json);
                 foreach (var url in urls)
                 {
@@ -241,7 +241,9 @@ namespace GameLauncher
                     bannerTimer.Start();
                 }
             }
-            catch { }
+            catch {
+                LoadBannersAsync(); // Retry on failure
+            }
         }
 
         private void ShowBanner(int index)
